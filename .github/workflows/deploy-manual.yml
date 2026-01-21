@@ -1,0 +1,86 @@
+name: Deploy to Server (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ssh_host:
+        description: 'SSH Host'
+        required: true
+        default: '49.13.52.51'
+      ssh_user:
+        description: 'SSH User'
+        required: true
+        default: 'root'
+      ssh_password:
+        description: 'SSH Password'
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ github.event.inputs.ssh_host }}
+          username: ${{ github.event.inputs.ssh_user }}
+          password: ${{ github.event.inputs.ssh_password }}
+          script: |
+            # Install Docker if not present
+            if ! command -v docker &> /dev/null; then
+              echo "Installing Docker..."
+              curl -fsSL https://get.docker.com -o get-docker.sh
+              sh get-docker.sh
+              rm get-docker.sh
+              systemctl enable docker
+              systemctl start docker
+            fi
+
+            # Install git if not present
+            if ! command -v git &> /dev/null; then
+              echo "Installing git..."
+              apt-get update -qq
+              apt-get install -y git
+            fi
+
+            # Create app directory
+            mkdir -p /opt/hello-world-app
+            cd /opt/hello-world-app
+
+            # Clone/pull latest code
+            if [ -d .git ]; then
+              git fetch origin
+              git reset --hard origin/${{ github.ref_name }}
+              git pull origin ${{ github.ref_name }}
+            else
+              git clone https://github.com/${{ github.repository }} .
+              git checkout ${{ github.ref_name }}
+            fi
+
+            # Stop and remove existing container
+            echo "Stopping existing container..."
+            docker stop hello-world-app 2>/dev/null || true
+            docker rm hello-world-app 2>/dev/null || true
+
+            # Build new image
+            echo "Building Docker image..."
+            docker build -t hello-world-app:latest .
+
+            # Run new container
+            echo "Starting application..."
+            docker run -d \
+              --name hello-world-app \
+              --restart unless-stopped \
+              -p 80:3000 \
+              hello-world-app:latest
+
+            # Verify deployment
+            echo "Verifying deployment..."
+            sleep 3
+            docker ps | grep hello-world-app || (docker logs hello-world-app && exit 1)
+
+            echo "Deployment successful! Application is running at http://${{ github.event.inputs.ssh_host }}"
